@@ -118,7 +118,7 @@ The following rules enforce the presence of the first external CIDR IP in packet
 
 ```yaml
 - match:
-	- ip:
+    - ip:
       	position: dst
         value: 10.71.0.0/18
       op: eq
@@ -141,7 +141,7 @@ When the flag **networking.fabric.config.fullMasquerade** is **true**, this fire
 
 ```yaml
 - match:
-	- ip:
+    - ip:
       	position: dst
         value: 10.71.0.0/18
       op: eq
