@@ -12,7 +12,7 @@ IP resources are managed by a controller that creates firewall configurations (f
 
 This IP is the first address within the external CIDR. It is used in the **service-nodeport-routing** firewall configuration (see the relevant section). This IP is used when a packet originates from a NodePort on a leaf cluster and needs to reach a pod in another leaf cluster.
 
-**The related *ipmapping-gw* firewall configuration is not needed.**
+**The related _ipmapping-gw_ firewall configuration is not needed.**
 
 # Firewall Configuration
 
@@ -26,9 +26,15 @@ TODO
 
 The main challenge with NodePort traffic is that there is no standard way to identify the traffic's origin based on the source IP. For example, when a packet reaches a node on the correct port, it may or may not be source NATed, and the source IP used depends on the CNI. To address this, Liqo always uses the first IP of the external CIDR to source NAT traffic received on a NodePort.
 
+![nodeport](./assets/images/nodeport.png)
+
 This firewall configuration does not apply the source NAT mentioned above. Instead, it contains a **ctmark** rule that creates a conntrack entry with a **mark** (a unique number for each node). Another prerouting chain then matches all traffic from other clusters with the first external CIDR IP as the destination and uses conntrack to apply the mark. A policy routing rule then uses this mark to forward packets to the original node. This is necessary because return NodePort traffic from the remote cluster always has the same destination IP. **Ensuring the same path is followed in both directions** is best practice, as some CNIs block traffic that takes a different return path.
 
-### \<node-name\>-gw-masquerade-bypass    
+![conntrack_outbound](./assets/images/conntrack_outbound.png)
+
+![conntrack_inbound](./assets/images/conntrack_inbound.png)
+
+### \<node-name\>-gw-masquerade-bypass
 
 Some CNIs masquerade traffic from a pod to a node (not running the pod) using the node's internal IP. For example, if a pod has IP 10.0.0.8 and is scheduled on a node with internal IP 192.168.0.5, pinging another node will result in packets with 192.168.0.5 as the source IP.
 
@@ -57,30 +63,30 @@ metadata:
 spec:
   table:
     chains:
-    - hook: postrouting
-      name: pre-postrouting
-      policy: accept
-      priority: 99
-      rules:
-        natRules:
-        - match:
-          - ip:
-              position: src
-              value: 10.127.65.33
-            op: eq
-            port:
-              position: dst
-              value: "6091"
-            proto:
-              value: udp
-          name: gw-cheina-cluster2-66bc45dd78-75d9j
-          natType: snat
-          targetRef:
-            kind: Pod
-            name: gw-cheina-cluster2-66bc45dd78-75d9j
-            namespace: liqo-tenant-cheina-cluster2
-          to: 10.127.65.33
-      type: nat
+      - hook: postrouting
+        name: pre-postrouting
+        policy: accept
+        priority: 99
+        rules:
+          natRules:
+            - match:
+                - ip:
+                    position: src
+                    value: 10.127.65.33
+                  op: eq
+                  port:
+                    position: dst
+                    value: "6091"
+                  proto:
+                    value: udp
+              name: gw-cheina-cluster2-66bc45dd78-75d9j
+              natType: snat
+              targetRef:
+                kind: Pod
+                name: gw-cheina-cluster2-66bc45dd78-75d9j
+                namespace: liqo-tenant-cheina-cluster2
+              to: 10.127.65.33
+        type: nat
     family: IPV4
     name: cheina-cluster1-worker2-gw-masquerade-bypass
 ```
@@ -91,7 +97,7 @@ spec:
 
 This firewall configuration contains several rules with different purposes.
 
-Geneve requires that two hosts can communicate directly, without IP changes in between (e.g., no NAT allowed). Sometimes CNIs apply a SNAT (using the node's primary IP) when traffic originates from pods and attempts to reach a node. These rules nullify such SNATs by applying a redundant SNAT. For instance, if a packet uses 10.0.0.1 as the source IP, a SNAT that enforces 10.0.0.1 will nullify any subsequent SNAT rules. The same applies to DNAT rules. 
+Geneve requires that two hosts can communicate directly, without IP changes in between (e.g., no NAT allowed). Sometimes CNIs apply a SNAT (using the node's primary IP) when traffic originates from pods and attempts to reach a node. These rules nullify such SNATs by applying a redundant SNAT. For instance, if a packet uses 10.0.0.1 as the source IP, a SNAT that enforces 10.0.0.1 will nullify any subsequent SNAT rules. The same applies to DNAT rules.
 
 ```yaml
 - match:
@@ -106,7 +112,6 @@ Geneve requires that two hosts can communicate directly, without IP changes in b
   name: podcidr-cheina-cluster2
   natType: snat
   to: 10.127.64.0/18
-
 ```
 
 The following rules enforce the presence of the first external CIDR IP in packets received by NodePort services. Refer to the **service-nodeport-routing** firewall configuration for more details.
@@ -145,7 +150,7 @@ When the flag **networking.fabric.config.fullMasquerade** is **true**, this fire
   to: 10.70.0.0
 ```
 
-This rule directs all traffic destined for the remote cluster to use the **unknown IP** as the source IP. This means that the remote traffic will see all incoming traffic from its peered cluster as originating from the first external CIDR IP. 
+This rule directs all traffic destined for the remote cluster to use the **unknown IP** as the source IP. This means that the remote traffic will see all incoming traffic from its peered cluster as originating from the first external CIDR IP.
 
 This is useful when the cluster's NodePorts use a PodCIDR IP to masquerade the incoming traffic.
 
@@ -174,10 +179,9 @@ Imagine we have two clusters named Cluster A and Cluster B, both with the same p
   name: 17b97d17-aa77-4494-bf9c-d307600f37af
   natType: dnat
   to: 10.127.64.0/18
-
 ```
 
-This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets. 
+This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets.
 
 ```yaml
 - match:
@@ -196,7 +200,6 @@ This rule performs the opposite function for packets coming from the other clust
   name: 75b6467c-4ce3-4434-8e18-9b4f568c12c7
   natType: snat
   to: 10.71.0.0/18
-
 ```
 
 ### \<tenant-name\>-remap-externalcidr (Gateway)
@@ -205,11 +208,11 @@ Functions similarly to **\<tenant-name\>-remap-podcidr** but for the **external-
 
 ### \<name\>-remap-ipmapping-gw
 
-These firewall configurations are created from IP resources (refer to the IP section), containing SNAT and DNAT rules to make the "local IP" reachable through the external CIDR. 
+These firewall configurations are created from IP resources (refer to the IP section), containing SNAT and DNAT rules to make the "local IP" reachable through the external CIDR.
 
 # Route Configuration
 
-Route configurations use policy routing only. 
+Route configurations use policy routing only.
 
 ## Labels
 
@@ -236,14 +239,14 @@ spec:
   table:
     name: cheina-cluster1-worker-extcidr
     rules:
-    - iif: liqo-tunnel
-      routes:
-      - dev: liqo.cjntnn4bdj
-        dst: 10.111.105.133/32
-        gw: 10.80.0.3
-      - dev: liqo.cjntnn4bdj
-        dst: 10.111.0.1/32
-        gw: 10.80.0.3
+      - iif: liqo-tunnel
+        routes:
+          - dev: liqo.cjntnn4bdj
+            dst: 10.111.105.133/32
+            gw: 10.80.0.3
+          - dev: liqo.cjntnn4bdj
+            dst: 10.111.0.1/32
+            gw: 10.80.0.3
 ```
 
 ### \<local-cluster-id\>-\<node-name\>-service-nodeport-routing (Gateway)
@@ -264,15 +267,15 @@ spec:
   table:
     name: cheina-cluster1-control-plane-service-nodeport-routing
     rules:
-    - dst: 10.70.0.0/32
-      fwmark: 2
-      routes:
-      - dev: liqo.jdr5xndgmb
-        dst: 10.70.0.0/32
-        gw: 10.80.0.2
-      targetRef:
-        kind: InternalNode
-        name: cheina-cluster1-control-plane
+      - dst: 10.70.0.0/32
+        fwmark: 2
+        routes:
+          - dev: liqo.jdr5xndgmb
+            dst: 10.70.0.0/32
+            gw: 10.80.0.2
+        targetRef:
+          kind: InternalNode
+          name: cheina-cluster1-control-plane
 ```
 
 ### \<local-cluster-id\>-\<node-name\>-gw-node (Gateway)
@@ -331,41 +334,41 @@ spec:
   table:
     name: cheina-cluster2
     rules:
-    - dst: 10.122.0.0/16
-      iif: liqo.fgckffk4dv
-      routes:
       - dst: 10.122.0.0/16
-        gw: 169.254.18.1
-    - dst: 10.70.0.0/16
-      iif: liqo.fgckffk4dv
-      routes:
+        iif: liqo.fgckffk4dv
+        routes:
+          - dst: 10.122.0.0/16
+            gw: 169.254.18.1
       - dst: 10.70.0.0/16
-        gw: 169.254.18.1
-    - dst: 10.122.0.0/16
-      iif: liqo.jdr5xndgmb
-      routes:
+        iif: liqo.fgckffk4dv
+        routes:
+          - dst: 10.70.0.0/16
+            gw: 169.254.18.1
       - dst: 10.122.0.0/16
-        gw: 169.254.18.1
-    - dst: 10.70.0.0/16
-      iif: liqo.jdr5xndgmb
-      routes:
+        iif: liqo.jdr5xndgmb
+        routes:
+          - dst: 10.122.0.0/16
+            gw: 169.254.18.1
       - dst: 10.70.0.0/16
-        gw: 169.254.18.1
-    - dst: 10.122.0.0/16
-      iif: liqo.cjntnn4bdj
-      routes:
+        iif: liqo.jdr5xndgmb
+        routes:
+          - dst: 10.70.0.0/16
+            gw: 169.254.18.1
       - dst: 10.122.0.0/16
-        gw: 169.254.18.1
-    - dst: 10.70.0.0/16
-      iif: liqo.cjntnn4bdj
-      routes:
+        iif: liqo.cjntnn4bdj
+        routes:
+          - dst: 10.122.0.0/16
+            gw: 169.254.18.1
       - dst: 10.70.0.0/16
-        gw: 169.254.18.1
+        iif: liqo.cjntnn4bdj
+        routes:
+          - dst: 10.70.0.0/16
+            gw: 169.254.18.1
 ```
 
 ### \<local-cluster-id\>-node-gw (Node)
 
-This route configuration contains the routes to reach the "other" side of the Geneve tunnel. It also includes all the routes that point to the remote cluster's pod CIDR and external CIDR. 
+This route configuration contains the routes to reach the "other" side of the Geneve tunnel. It also includes all the routes that point to the remote cluster's pod CIDR and external CIDR.
 
 ```yaml
 apiVersion: networking.liqo.io/v1beta1
@@ -380,19 +383,19 @@ spec:
   table:
     name: cheina-cluster2-node-gw
     rules:
-    - dst: 10.80.0.4/32
-      routes:
-      - dev: liqo.7hr82v9br5
-        dst: 10.80.0.4/32
-        scope: link
-    - dst: 10.68.0.0/16
-      routes:
+      - dst: 10.80.0.4/32
+        routes:
+          - dev: liqo.7hr82v9br5
+            dst: 10.80.0.4/32
+            scope: link
       - dst: 10.68.0.0/16
-        gw: 10.80.0.4
-    - dst: 10.71.0.0/18
-      routes:
+        routes:
+          - dst: 10.68.0.0/16
+            gw: 10.80.0.4
       - dst: 10.71.0.0/18
-        gw: 10.80.0.4
+        routes:
+          - dst: 10.71.0.0/18
+            gw: 10.80.0.4
 ```
 
 # Debug commands
