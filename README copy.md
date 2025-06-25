@@ -1,12 +1,55 @@
+# Use cases
+
+## Handle NodePort traffic
+
+The main challenge with NodePort traffic is the lack of a standardized way to identify the traffic’s origin based on the source IP address.
+When traffic reaches a NodePort service, the behavior varies depending on the CNI (Container Network Interface). In some cases, the source IP is source NATed to the first IP of the pod CIDR (which is often reserved for NodePort traffic). In other cases, another IP address is used or source NAT is not applied at all.
+
+Problems arise when this traffic traverses a WireGuard tunnel and needs to return to the cluster where it originated.
+When packets from a Pod of Cluster A are directed toward a Pod in cluster B, return traffic can be easily handled by cluster B, as the destination IP address belongs to one of the CIDR assigned to cluster A, so traffic can be forwarded to the right gateway and finally forwarded to the appropriate WireGuard tunnel connecting to the Liqo Gateway in cluster A. However, in the case of NodePort traffic, the source IP address is infrastructure-dependent, making it difficult to determine which cluster originated the traffic.
+
+![The NodePort issue](./assets/images/nodeport/nodeport_issue1.excalidraw.svg)
+
+To address this issue, before traffic leaves cluster A the Liqo’s gateway performs source NAT on traffic coming from unknown IP addresses, rewriting the source IP to the first IP of the tenant’s external CIDR. This ensures that, when the traffic reaches the destination cluster, its source IP is within a known CIDR associated with Cluster A. This allows the response traffic to be routed back through the correct WireGuard tunnel to the originating cluster.
+
+Another aspect to consider is that, once the return traffic reaches the originating cluster, it must exit from the same node where the original request was received. This ensures that traffic **follows the same path in both directions**, which is crucial because some CNIs may drop traffic if it follows a different return path.
+
+To achieve this, a conntrack mark (ctmark) is applied. When traffic exits through a Geneve interface on the gateway (each connected to a specific node), a conntrack entry is created with a mark representing a unique identifier for the node where the traffic was initially received. As each Geneve interface is connected to one of the node, the mark is determined by checking from which Geneve interface the packets came out.
+
+![conntrack_outbound](./assets/images/nodeport/conntrack_outbound.excalidraw.png)
+
+Conntrack stores the traffic quintuple (protocol, source and destination IP addresses, and ports) along with the mark. When return traffic passes through the gateway, the destination IP (which was previously set to the first IP of the external CIDR) is restored to the original source IP. The conntrack entry is matched, and the response packets are tagged with the same mark, identifying the node of origin.
+
+![conntrack_inbound](./assets/images/nodeport/conntrack_inbound.excalidraw.png)
+
+A routing rule based on this mark ensures that traffic is forwarded to the correct Geneve tunnel, ultimately reaching the originating node, where packets are then delivered to their final destination.
+
+![The NodePort issue solution](./assets/images/nodeport/nodeport.excalidraw.png)
+
+### Resources involved
+
+- **IPs**:
+  - [\<tenant-name\>-unknown-source](#tenant-name-unknown-source): an IP address allocated to source NAT all traffic from an unknown IP address outgoing to the Gatewayd
+- **Firewall Configurations**
+  - [service-nodeport-routing](#service-nodeport-routing): containing the ctmark rule to create the contract with the mark corresponding to the node and to add the mark to the packet metadata once the return traffic traverse the gateway.
+  - [\<tenant-name\>-masquerade-bypass](#tenant-name-masquerade-bypass-node): one of those rules applies source natting in the node where the gateway is running
+- **Routing Configurations**:
+  - [\<local-cluster-id\>-\<node-name\>-service-nodeport-routing](#local-cluster-id-node-name-service-nodeport-routing-gateway): the routing rule allowing routing the return traffic to the specific node where the NodePort traffic has been received.
+
+
 # IP
 
 ### Leaf-to-Leaf Communication
 
-The IP resource serves two main purposes. First, it allocates IPs to prevent other components from using them. Second, it maps local IPs to an external CIDR IP, allowing remote adjacent clusters to reach those IPs. For example, if cluster A is peered with cluster B and an IP resource exists on cluster A with the "local IP" set to 10.111.129.179, its status will be updated with an IP from the local external CIDR. This external IP can then be used by adjacent clusters to reach 10.111.129.179.
+The IP resource serves two main purposes:
+1. it allocates IPs to prevent other components from using them
+2. it maps an IP (e.g. a local IP) to an external CIDR IP, allowing remote adjacent clusters to reach those IPs.
+
+For example, if cluster A is peered with cluster B and an IP resource exists on cluster A with the "local IP" set to 10.111.129.179, its status will be updated with an IP from the local external CIDR. This external IP can then be used by adjacent clusters to reach 10.111.129.179.
 
 This mechanism is useful for leaf-to-leaf communication because cluster A is unaware of the pod CIDR used by cluster C. Cluster B exposes cluster C's pods to A using the IP resource.
 
-IP resources are managed by a controller that creates firewall configurations (fwcfg) for the gateways.
+IP resources are managed by [a controller](https://github.com/liqotech/liqo/blob/978cc2ce96105507923dd167528946da4413804d/pkg/gateway/remapping/ip_controller.go) that creates firewall configurations (fwcfg) for the gateways.
 
 ### \<tenant-name\>-unknown-source
 
@@ -26,13 +69,11 @@ TODO
 
 The main challenge with NodePort traffic is that there is no standard way to identify the traffic's origin based on the source IP. For example, when a packet reaches a node on the correct port, it may or may not be source NATed, and the source IP used depends on the CNI. To address this, Liqo always uses the first IP of the external CIDR to source NAT traffic received on a NodePort.
 
-![nodeport](./assets/images/nodeport.png)
+![nodeport](./assets/images/nodeport.excalidraw.png)
 
-This firewall configuration does not apply the source NAT mentioned above. Instead, it contains a **ctmark** rule that creates a conntrack entry with a **mark** (a unique number for each node). Another prerouting chain then matches all traffic from other clusters with the first external CIDR IP as the destination and uses conntrack to apply the mark. A policy routing rule then uses this mark to forward packets to the original node. This is necessary because return NodePort traffic from the remote cluster always has the same destination IP. **Ensuring the same path is followed in both directions** is best practice, as some CNIs block traffic that takes a different return path.
+This firewall configuration does not apply the source NAT mentioned above. Instead, it contains a **ctmark** rule that creates a conntrack entry with a **mark** (a unique number for each node). Another prerouting chain then matches all traffic from other clusters with the first external CIDR IP as the destination and uses conntrack to apply the mark. A [policy routing rule](#local-cluster-id-node-name-service-nodeport-routing-gateway) then uses this mark to forward packets to the original node. This is necessary because return NodePort traffic from the remote cluster always has the same destination IP. **Ensuring the same path is followed in both directions** is best practice, as some CNIs block traffic that takes a different return path.
 
-![conntrack_outbound](./assets/images/conntrack_outbound.png)
-
-![conntrack_inbound](./assets/images/conntrack_inbound.png)
+For further info check [how NodePort traffic is handled](#handle-nodeport-traffic).
 
 ### \<node-name\>-gw-masquerade-bypass
 
@@ -45,8 +86,12 @@ This behavior has been observed in the following scenarios:
 - KindNet
 
 This can be problematic because Geneve does not support NAT (or IP changes) between the two hosts. When a Geneve tunnel needs to be established (such as between gateway pods and nodes), both hosts must be able to "ping" each other using the IP assigned to their network interface.
+In the case described above, the source address of the packets from the Gateway pod directed to one of the node via the Geneve tunnel is masquerated with the IP address of where the Gateway pod is running.
 
-This firewall configuration solves the issue using the same approach as the **\<tenant\>-masquerade-bypass** configuration. The double SNAT trick is also used here to prevent masquerading. Whenever a gateway pod is scheduled on a node, a rule is added only on that specific node (with the label `networking.liqo.io/firewall-unique`). It matches only traffic with the gateway IP as the source and the Geneve port as the destination.
+This firewall configuration solves the issue using the same approach as the **\<tenant\>-masquerade-bypass** configuration. The double SNAT trick is also used here to prevent masquerading. That's because a SNAT rule that enforces a specific IP address nullify any subsequent SNAT rules targetting that address. The same applies to DNAT rules.
+For instance , if a packet uses 10.0.0.1 as the source IP, a SNAT that enforces 10.0.0.1 will nullify any subsequent SNAT rules targetting 10.0.0.1.
+Which means that if a SNAT is applied on traffic coming from the IP address of the gateway and enforces its same IP address, prevents the CNI from source natting packets from the gateway with the IP address of the node.
+Whenever a gateway pod is scheduled on a node, a rule is added only on that specific node (whose name is reported in the label `networking.liqo.io/firewall-unique`). It matches only traffic with the gateway IP as the source and the Geneve port as the destination.
 
 ```yaml
 apiVersion: networking.liqo.io/v1beta1
@@ -97,7 +142,8 @@ spec:
 
 This firewall configuration contains several rules with different purposes.
 
-The following rule solves an issue with some CNIs like Calico. When a packet coming from a pod is sent towards a destination which is not part of the local cluster, the CNI should masquerade the traffic using and IP (usualy the node's one). The solution is to use a double SNAT which apply a useless rule. This trick nullifies the masquerade, allowing the pod' traffic to be sent with its original source IP.
+Geneve requires that two hosts can communicate directly, without IP changes in between (e.g., no NAT allowed). Sometimes CNIs apply a SNAT (using the node's primary IP) when traffic originates from pods and attempts to reach a node. These rules nullify such SNATs by applying a redundant SNAT. For instance, if a packet uses 10.0.0.1 as the source IP, a SNAT that enforces 10.0.0.1 will nullify any subsequent SNAT rules. The same applies to DNAT rules.
+**? Maybe wrong, does not explaing the following rule**
 
 ```yaml
 - match:
@@ -135,6 +181,8 @@ The other rules apply the same concept but for the external CIDR.
 
 **This rule is the reason why NodePorts do not work with Cilium without kube-proxy. With no-kubeproxy, Cilium uses eBPF to manage firewall rules, so this fwcfg is bypassed. A future solution should consider moving this rule inside the Gateway.**
 
+**? Cosa ha impedito adesso questo spostamento? A parole sembra semplice**
+
 #### Full-Masquerade
 
 When the flag **networking.fabric.config.fullMasquerade** is **true**, this firewall configuration changes. In particular, the **service-nodeport-\<cheina-cluster2\>** rule becomes the only one still present, and its match rules do not include a check on the source IP of the packets.
@@ -153,6 +201,7 @@ When the flag **networking.fabric.config.fullMasquerade** is **true**, this fire
 This rule directs all traffic destined for the remote cluster to use the **unknown IP** as the source IP. This means that the remote traffic will see all incoming traffic from its peered cluster as originating from the first external CIDR IP.
 
 This is useful when the cluster's NodePorts use a PodCIDR IP to masquerade the incoming traffic.
+**? Perchè è utile cosa cambia dal punto di vista di Liqo?**
 
 ### \<tenant-name\>-remap-podcidr (Gateway)
 
@@ -160,7 +209,7 @@ This rule manages the CIDR remapping in cases where two clusters have the same p
 
 Before continuing, let's recap how this works:
 
-Imagine we have two clusters named Cluster A and Cluster B, both with the same pod CIDR (e.g., 10.1.0.0/16). Each cluster can remap the CIDR of the adjacent one, even if they are the same. Cluster A can autonomously decide on a new CIDR to identify Cluster B's pods. When Cluster A wants to send traffic to Cluster B, it will use the new remapped CIDR. This rule's purpose is to translate the "fake" destination IP back to the real one. Note that this rule ignores traffic coming from eth0, as traffic from the pods will be received on Geneve interfaces (liqo-xxx).
+Imagine we have two clusters named Cluster A and Cluster B, both with the same pod CIDR (e.g., 10.1.0.0/16). Each cluster can remap the CIDR of the adjacent one, even if they are the same. Cluster A can autonomously decide on a new CIDR to identify Cluster B's pods. When Cluster A wants to send traffic to Cluster B, it will use the new remapped CIDR. This rule's purpose is to translate the "fake" destination IP back to the real one. Note that this rule ignores traffic coming from eth0 and liqo-tunnel, as traffic from the pods will be received on Geneve interfaces (liqo-xxx).
 
 ```yaml
 - match:
@@ -181,7 +230,7 @@ Imagine we have two clusters named Cluster A and Cluster B, both with the same p
   to: 10.127.64.0/18
 ```
 
-This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets.
+This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets, that's why source natting is applied only to `liqo-tunnel`, which is the interface of the wireguard tunnel:
 
 ```yaml
 - match:
@@ -281,8 +330,10 @@ spec:
 ### \<local-cluster-id\>-\<node-name\>-gw-node (Gateway)
 
 Contains the rule that allows traffic from the gateway to nodes using Geneve tunnels. Note that Liqo uses the internal CIDR to assign an IP to every Geneve interface. If you need to debug the traffic between Geneve interfaces, you can ping each interface. This is the first rule in the
+**? Frase mancante**
 
 Also contains a route for each pod in the cluster. These routes allow traffic coming from other clusters to be forwarded to the correct node. This is necessary because Kubernetes does not provide a standard way to determine the pod CIDR range used for each node.
+**? Non sono sicuro di aver capito, forse sarebbe carino scrivere un paragrafo in use case come nel caso delle nodeport**
 
 ```yaml
 apiVersion: networking.liqo.io/v1beta1
@@ -406,11 +457,14 @@ When a pod using the **host network** communicates with a regular pod, the sourc
 
 The InternalNode resource stores the information about which IP is used to reach the node itself and which IP is used to reach the other cluster's nodes.
 
-This information is provided using `ip route get <gw-ip>` on each node and getting the src IP from the output. That command allows to understand what network interface will be used to reach the gateway.
+This information is provided using `ip route get <gw-ip>` on each node and getting the src IP from the output. That command allows to understand what network interface will be used to reach the gateway pod.
 
 This information is fundamental to enstablish the geneve tunnels, because each gateway need to know what IP to use to reach a node. Remember that geneve wants that the couple src/dst IP used in one way is the same used in the other way.
 
-In this example, the gateway for the remote cluster **cheina-cluster2** is scheduled on the node **cheina-cluster1-worker4**. The internal IP of the node **cheina-cluster1-worker4** is **10.112.2.188** and liqo is able to understand it running the command `ip route get 10.112.2.170` on the node **cheina-cluster1-worker4**. The same command is run on the other nodes to understand understand the **remote IP**.
+In this example, the gateway for the remote cluster **cheina-cluster2** is scheduled on the node **cheina-cluster1-worker4**. The internal IP of the node **cheina-cluster1-worker4** is **10.112.2.188** and liqo is able to understand it running the command `ip route get 10.112.2.170` (where `10.112.2.170` is the IP address of pod of the Gateway) on the node **cheina-cluster1-worker4**.
+The same command is executed for each of the other nodes to get the **remote IP** used by the Gateways to create a Geneve tunnel with each of the nodes of the cluster.
+
+Note that the IPs defined in the InternalNode resources are valid for each of the gateways created in the cluster and they are divided into local and remote because each gateway use the local address to create a tunnel between the Gateway pod and the Node where it is running, and the remote address to create a tunnel with all the other nodes.
 
 ```
 kubectl get internalnode -o wide
