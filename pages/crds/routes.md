@@ -68,7 +68,7 @@ spec:
 
 ### \<local-cluster-id\>-\<node-name\>-gw-node (Gateway)
 
-Contains the rule that allows traffic from the gateway to nodes using Geneve tunnels. Note that Liqo uses the internal CIDR to assign an IP to every Geneve interface. If you need to debug the traffic between Geneve interfaces, you can ping each interface. This is the first rule in the
+Contains the rule that allows traffic from the gateway to nodes using Geneve tunnels. Note that Liqo uses the internal CIDR to assign an IP to every Geneve interface. If you need to debug the traffic between Geneve interfaces, you can ping each interface.
 
 Also contains a route for each pod in the cluster. These routes allow traffic coming from other clusters to be forwarded to the correct node. This is necessary because Kubernetes does not provide a standard way to determine the pod CIDR range used for each node.
 
@@ -185,3 +185,4 @@ spec:
           - dst: 10.71.0.0/18
             gw: 10.80.0.4
 ```
+

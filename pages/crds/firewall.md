@@ -1,24 +1,8 @@
 # Firewall Configuration
 
-## Labels
-
-TODO
-
 ## Before Peering
 
-### service-nodeport-routing
-
-The main challenge with NodePort traffic is that there is no standard way to identify the traffic's origin based on the source IP. For example, when a packet reaches a node on the correct port, it may or may not be source NATed, and the source IP used depends on the CNI. To address this, Liqo always uses the first IP of the external CIDR to source NAT traffic received on a NodePort.
-
-![nodeport](./assets/images/nodeport.png)
-
-This firewall configuration does not apply the source NAT mentioned above. Instead, it contains a **ctmark** rule that creates a conntrack entry with a **mark** (a unique number for each node). Another prerouting chain then matches all traffic from other clusters with the first external CIDR IP as the destination and uses conntrack to apply the mark. A policy routing rule then uses this mark to forward packets to the original node. This is necessary because return NodePort traffic from the remote cluster always has the same destination IP. **Ensuring the same path is followed in both directions** is best practice, as some CNIs block traffic that takes a different return path.
-
-![conntrack_outbound](./assets/images/conntrack_outbound.png)
-
-![conntrack_inbound](./assets/images/conntrack_inbound.png)
-
-### \<node-name\>-gw-masquerade-bypass
+### \<node-name\>-gw-masquerade-bypass (Node)
 
 Some CNIs masquerade traffic from a pod to a node (not running the pod) using the node's internal IP. For example, if a pod has IP 10.0.0.8 and is scheduled on a node with internal IP 192.168.0.5, pinging another node will result in packets with 192.168.0.5 as the source IP.
 
@@ -29,8 +13,12 @@ This behavior has been observed in the following scenarios:
 - KindNet
 
 This can be problematic because Geneve does not support NAT (or IP changes) between the two hosts. When a Geneve tunnel needs to be established (such as between gateway pods and nodes), both hosts must be able to "ping" each other using the IP assigned to their network interface.
+In the case described above, the source address of the packets from the Gateway pod directed to one of the node via the Geneve tunnel is masquerated with the IP address of where the Gateway pod is running.
 
-This firewall configuration solves the issue using the same approach as the **\<tenant\>-masquerade-bypass** configuration. The double SNAT trick is also used here to prevent masquerading. Whenever a gateway pod is scheduled on a node, a rule is added only on that specific node (with the label `networking.liqo.io/firewall-unique`). It matches only traffic with the gateway IP as the source and the Geneve port as the destination.
+This firewall configuration solves the issue using the same approach as the **\<tenant\>-masquerade-bypass** configuration. The double SNAT trick is also used here to prevent masquerading. That's because a SNAT rule that enforces a specific IP address nullify any subsequent SNAT rules targetting that address. The same applies to DNAT rules.
+For instance , if a packet uses 10.0.0.1 as the source IP, a SNAT that enforces 10.0.0.1 will nullify any subsequent SNAT rules targetting 10.0.0.1.
+Which means that if a SNAT is applied on traffic coming from the IP address of the gateway and enforces its same IP address, prevents the CNI from source natting packets from the gateway with the IP address of the node.
+Whenever a gateway pod is scheduled on a node, a rule is added only on that specific node (whose name is reported in the label `networking.liqo.io/firewall-unique`). It matches only traffic with the gateway IP as the source and the Geneve port as the destination.
 
 ```yaml
 apiVersion: networking.liqo.io/v1beta1
@@ -81,7 +69,7 @@ spec:
 
 This firewall configuration contains several rules with different purposes.
 
-The following rule solves an issue with some CNIs like Calico. When a packet coming from a pod is sent towards a destination which is not part of the local cluster, the CNI should masquerade the traffic using and IP (usualy the node's one). The solution is to use a double SNAT which apply a useless rule. This trick nullifies the masquerade, allowing the pod' traffic to be sent with its original source IP.
+Sometimes CNIs masquerade traffic which is not part of the pod CIDR. This masquerade can cause issues when the traffic needs to be routed back to the originating cluster. To prevent this, a SNAT rule is applied to packets that are originated from the pod CIDR and destined to the remote pod CIDR.
 
 ```yaml
 - match:
@@ -117,7 +105,7 @@ The following rules enforce the presence of the first external CIDR IP in packet
 
 The other rules apply the same concept but for the external CIDR.
 
-**This rule is the reason why NodePorts do not work with Cilium without kube-proxy. With no-kubeproxy, Cilium uses eBPF to manage firewall rules, so this fwcfg is bypassed. A future solution should consider moving this rule inside the Gateway.**
+**This rule is the reason why NodePorts do not work with Cilium without kube-proxy. With no-kubeproxy, Cilium uses eBPF to manage firewall rules, so this fwcfg is bypassed. A future solution should consider moving this rule inside the Gateway. Please notice that moving this rule is not enough since some routing rules inside the gateway use the source IP as policy and the SNAT is only available on pre-routing netfilter's hook.**
 
 #### Full-Masquerade
 
@@ -136,7 +124,7 @@ When the flag **networking.fabric.config.fullMasquerade** is **true**, this fire
 
 This rule directs all traffic destined for the remote cluster to use the **unknown IP** as the source IP. This means that the remote traffic will see all incoming traffic from its peered cluster as originating from the first external CIDR IP.
 
-This is useful when the cluster's NodePorts use a PodCIDR IP to masquerade the incoming traffic.
+This is useful when the cluster's CNI masquerade with the node's IP all the traffic directed to an IP which is not part of the pod CIDR, service CIDR or node CIDR. If this masquerade happens, the remote cluster will not be able to route the traffic back to the originating cluster.
 
 ### \<tenant-name\>-remap-podcidr (Gateway)
 
@@ -144,7 +132,7 @@ This rule manages the CIDR remapping in cases where two clusters have the same p
 
 Before continuing, let's recap how this works:
 
-Imagine we have two clusters named Cluster A and Cluster B, both with the same pod CIDR (e.g., 10.1.0.0/16). Each cluster can remap the CIDR of the adjacent one, even if they are the same. Cluster A can autonomously decide on a new CIDR to identify Cluster B's pods. When Cluster A wants to send traffic to Cluster B, it will use the new remapped CIDR. This rule's purpose is to translate the "fake" destination IP back to the real one. Note that this rule ignores traffic coming from eth0, as traffic from the pods will be received on Geneve interfaces (liqo-xxx).
+Imagine we have two clusters named Cluster A and Cluster B, both with the same pod CIDR (e.g., 10.1.0.0/16). Each cluster can remap the CIDR of the adjacent one, even if they are the same. Cluster A can autonomously decide on a new CIDR to identify Cluster B's pods. When Cluster A wants to send traffic to Cluster B, it will use the new remapped CIDR. This rule's purpose is to translate the "fake" destination IP back to the real one. Note that this rule ignores traffic coming from eth0 and liqo-tunnel, as traffic from the pods will be received on Geneve interfaces (liqo-xxx).
 
 ```yaml
 - match:
@@ -165,7 +153,7 @@ Imagine we have two clusters named Cluster A and Cluster B, both with the same p
   to: 10.127.64.0/18
 ```
 
-This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets.
+This rule performs the opposite function for packets coming from the other cluster. It maps the packet's source IP using the remapped CIDR, which is necessary for routing the returning packets, that's why source natting is applied only to `liqo-tunnel`, which is the interface of the wireguard tunnel:
 
 ```yaml
 - match:
