@@ -6,7 +6,7 @@ When traffic reaches a NodePort service, the behavior varies depending on the CN
 Problems arise when this traffic traverses a WireGuard tunnel and needs to return to the cluster where it originated.
 When packets from a Pod of Cluster A are directed toward a Pod in cluster B, return traffic can be easily handled by cluster B, as the destination IP address belongs to one of the CIDR assigned to cluster A, so traffic can be forwarded to the right gateway and finally forwarded to the appropriate WireGuard tunnel connecting to the Liqo Gateway in cluster A. However, in the case of NodePort traffic, the source IP address is infrastructure-dependent, making it difficult to determine which cluster originated the traffic.
 
-![The NodePort issue](../../assets/images/nodeport/nodeport_issue1.excalidraw.svg)
+![The NodePort issue](../../assets/images/nodeport_issue1.excalidraw.svg)
 
 To address this issue, before traffic leaves cluster A the Liqo’s gateway performs source NAT on traffic coming from unknown IP addresses, rewriting the source IP to the first IP of the tenant’s external CIDR. This ensures that, when the traffic reaches the destination cluster, its source IP is within a known CIDR associated with Cluster A. This allows the response traffic to be routed back through the correct WireGuard tunnel to the originating cluster.
 
@@ -14,15 +14,15 @@ Another aspect to consider is that, once the return traffic reaches the originat
 
 To achieve this, a conntrack mark (ctmark) is applied. When traffic exits through a Geneve interface on the gateway (each connected to a specific node), a conntrack entry is created with a mark representing a unique identifier for the node where the traffic was initially received. As each Geneve interface is connected to one of the node, the mark is determined by checking from which Geneve interface the packets came out.
 
-![conntrack_outbound](../../assets/images/nodeport/conntrack_outbound.excalidraw.png)
+![conntrack_outbound](../../assets/images/conntrack_outbound.excalidraw.png)
 
 Conntrack stores the traffic quintuple (protocol, source and destination IP addresses, and ports) along with the mark. When return traffic passes through the gateway, the destination IP (which was previously set to the first IP of the external CIDR) is restored to the original source IP. The conntrack entry is matched, and the response packets are tagged with the same mark, identifying the node of origin.
 
-![conntrack_inbound](../../assets/images/nodeport/conntrack_inbound.excalidraw.png)
+![conntrack_inbound](../../assets/images/conntrack_inbound.excalidraw.png)
 
 A routing rule based on this mark ensures that traffic is forwarded to the correct Geneve tunnel, ultimately reaching the originating node, where packets are then delivered to their final destination.
 
-![The NodePort issue solution](../../assets/images/nodeport/nodeport.excalidraw.png)
+![The NodePort issue solution](../../assets/images/nodeport.excalidraw.png)
 
 ## Resources involved
 
