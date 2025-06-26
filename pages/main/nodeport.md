@@ -6,9 +6,9 @@ When traffic reaches a NodePort service, the behavior varies depending on the CN
 Problems arise when this traffic traverses a WireGuard tunnel and needs to return to the cluster where it originated.
 When packets from a Pod of Cluster A are directed toward a Pod in cluster B, return traffic can be easily handled by cluster B, as the destination IP address belongs to one of the CIDR assigned to cluster A, so traffic can be forwarded to the right gateway and finally forwarded to the appropriate WireGuard tunnel connecting to the Liqo Gateway in cluster A. However, in the case of NodePort traffic, the source IP address is infrastructure-dependent, making it difficult to determine which cluster originated the traffic.
 
-![The NodePort issue](../../assets/images/nodeport_issue1.excalidraw.svg)
-
 To address this issue, before traffic leaves cluster A the Liqo’s gateway performs source NAT on traffic coming from unknown IP addresses, rewriting the source IP to the first IP of the tenant’s external CIDR. This ensures that, when the traffic reaches the destination cluster, its source IP is within a known CIDR associated with Cluster A. This allows the response traffic to be routed back through the correct WireGuard tunnel to the originating cluster.
+
+![The NodePort issue solution](../../assets/images/nodeport.excalidraw.png)
 
 Another aspect to consider is that, once the return traffic reaches the originating cluster, it must exit from the same node where the original request was received. This ensures that traffic **follows the same path in both directions**, which is crucial because some CNIs may drop traffic if it follows a different return path.
 
@@ -20,9 +20,7 @@ Conntrack stores the traffic quintuple (protocol, source and destination IP addr
 
 ![conntrack_inbound](../../assets/images/conntrack_inbound.excalidraw.png)
 
-A routing rule based on this mark ensures that traffic is forwarded to the correct Geneve tunnel, ultimately reaching the originating node, where packets are then delivered to their final destination.
-
-![The NodePort issue solution](../../assets/images/nodeport.excalidraw.png)
+A policy routing rule based on this mark ensures that traffic is forwarded to the correct Geneve tunnel, ultimately reaching the originating node, where packets are then delivered to their final destination.
 
 ## Resources involved
 
