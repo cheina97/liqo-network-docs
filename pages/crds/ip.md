@@ -9,7 +9,11 @@ For example, if cluster A is peered with cluster B and an IP resource exists on 
 
 This mechanism is useful for leaf-to-leaf communication because cluster A is unaware of the pod CIDR used by cluster C. Cluster B exposes cluster C's pods to A using the IP resource.
 
-IP resources are managed by [a controller](https://github.com/liqotech/liqo/blob/978cc2ce96105507923dd167528946da4413804d/pkg/gateway/remapping/ip_controller.go) that creates firewall configurations (fwcfg) for the gateways.
+IP resources are managed by [a controller](https://github.com/liqotech/liqo/blob/978cc2ce96105507923dd167528946da4413804d/pkg/gateway/remapping/ip_controller.go) that creates these [firewall configurations](../crds/firewall.md#name-remap-ipmapping-gw) (fwcfg) for the gateways.
+
+## Masquerade
+
+Please note that the firewall configurations created by the IP controller is applied by default inside the gateway pods. If you want to apply them on the nodes, you need to set the `spec.masquerade` field to `true` in the IP resource. This can be useful if you want to create an IP resource to expose a service outside the Cluster.
 
 ## \<tenant-name\>-unknown-source
 

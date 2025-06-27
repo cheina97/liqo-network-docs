@@ -1,10 +1,8 @@
 # Route Configuration
 
-Route configurations use policy routing only.
+The **Route Configuration** is a CRD (Custom Resource Definition) that defines a set of **policy routing** rules for routing traffic within the Liqo network.
 
-## Labels
-
-TODO
+**Route configurations** are managed by a dedicated controller running inside gateways and fabric pods. This controller reconciles the **route configurations** and applies the rules.
 
 ## Before Peering
 

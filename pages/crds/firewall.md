@@ -1,5 +1,9 @@
 # Firewall Configuration
 
+The **firewall configuration** is a CRD (Custom Resource Definition) that defines a set of **nftables** rules.
+
+**Firewall configurations** are managed by a dedicated controller running inside gateways and fabric pods. This controller reconcile the **firewall configurations** and applies the rules.
+
 ## Before Peering
 
 ### \<node-name\>-gw-masquerade-bypass (Node)
@@ -181,3 +185,52 @@ Functions similarly to **\<tenant-name\>-remap-podcidr** but for the **external-
 ### \<name\>-remap-ipmapping-gw
 
 These firewall configurations are created from IP resources (refer to the IP section), containing SNAT and DNAT rules to make the "local IP" reachable through the external CIDR.
+
+In the next example we can see the firewall configuration created from an IP resource which remaps the local IP `10.122.2.114` (Pod IP) to the external CIDR IP `10.70.0.4` (external CIDR is `10.70.0.0/16`).
+
+```yaml
+apiVersion: networking.liqo.io/v1beta1
+kind: FirewallConfiguration
+metadata:
+  labels:
+    liqo.io/managed: "true"
+    networking.liqo.io/firewall-category: gateway
+    networking.liqo.io/firewall-subcategory: ip-mapping
+  name: nginx-5869d7778c-pvpvw-remap-ipmapping-gw
+  namespace: liqo-demo
+spec:
+  table:
+    chains:
+    - hook: prerouting
+      name: prerouting
+      policy: accept
+      priority: -100
+      rules:
+        natRules:
+        - match:
+          - ip:
+              position: dst
+              value: 10.70.0.4
+            op: eq
+          name: nginx-5869d7778c-pvpvw
+          natType: dnat
+          to: 10.122.2.114
+      type: nat
+    - hook: postrouting
+      name: postrouting
+      policy: accept
+      priority: 100
+      rules:
+        natRules:
+        - match:
+          - ip:
+              position: src
+              value: 10.70.0.4
+            op: eq
+          name: nginx-5869d7778c-pvpvw
+          natType: snat
+          to: 10.122.2.114
+      type: nat
+    family: IPV4
+    name: nginx-5869d7778c-pvpvw-remap-ipmapping-gw-liqo-demo
+```
