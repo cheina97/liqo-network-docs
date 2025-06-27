@@ -42,3 +42,15 @@ The flow of a packet from a pod in one cluster to a pod in another cluster invol
 The return traffic follows the same path in reverse, ensuring symmetric routing between the two pods across clusters.
 
 ![Packets flow](../../assets/images/baseflow.excalidraw.png)
+
+## CIDR Remapping
+
+Liqo enables two clusters to peer even if they have the same pod CIDR. Each cluster can independently remap the remote cluster’s pod CIDR to a different, locally chosen CIDR. This remapped CIDR is decided by each cluster on its own and is not shared with other clusters.
+
+For example, if both Cluster A and Cluster B use 10.0.0.0/16 as their pod CIDR, Cluster A can remap Cluster B’s pod CIDR (10.0.0.0/16) to a new CIDR, such as 11.0.0.0/16. As a result, Cluster A will be able to reach a pod in Cluster B with IP 10.0.0.6 using the remapped IP 11.0.0.6. The same applies in the opposite direction if Cluster B chooses to remap Cluster A’s CIDR.
+
+All the remapping logic is managed by the IPAM component of liqo, which tracks the used IPs and CIDRs inside the cluster.
+
+All the firewall rules for managing this remapping is handled inside the gateway pods, ensuring seamless communication even in the presence of overlapping CIDRs.
+
+The same logic is applied also to the **external CIDR**. This means that every cluster will be able to remap its  neighboring cluster's external CIDR to a different, locally chosen CIDR. Pay attention that if you don't change the default external CIDR used by Liqo (check the helm values), every cluster will use the same external CIDR and neighbour's external CIDRs will appear always remapped.
